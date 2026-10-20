@@ -1,2 +1,62 @@
-:root{font-family:Inter,"Segoe UI",sans-serif;color:#26342f;background:#dfe9e4;font-synthesis:none;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;font-optical-sizing:auto;font-weight:400}*{box-sizing:border-box}body{margin:0;min-width:320px;min-height:100vh}button,input{font:inherit}button{color:inherit}#root{min-height:100vh}
+:root {
+  font-family: Roboto, "Google Sans Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #202124;
+  background: #f8f9fa;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+  font-weight: 400;
 
+  --gm-blue: #1a73e8;
+  --gm-blue-hover: #1557b0;
+  --gm-blue-active: #174ea6;
+  --gm-blue-surface: #e8f0fe;
+  --gm-green: #188038;
+  --gm-green-surface: #e6f4ea;
+  --gm-nav-green: #0b8043;
+  --gm-red: #d93025;
+  --gm-red-surface: #fce8e6;
+  --gm-red-hover: #c5221f;
+  --gm-yellow: #f9ab00;
+  --gm-yellow-surface: #fef7e0;
+  --gm-surface: #ffffff;
+  --gm-surface-variant: #f1f3f4;
+  --gm-surface-hover: #f8f9fa;
+  --gm-border: #dadce0;
+  --gm-border-subtle: #e8eaed;
+  --gm-text-primary: #202124;
+  --gm-text-secondary: #5f6368;
+  --gm-text-tertiary: #70757a;
+  --gm-shadow-1: 0 1px 2px rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15);
+  --gm-shadow-2: 0 2px 4px rgba(0,0,0,0.2), 0 -1px 0px rgba(0,0,0,0.02);
+  --gm-shadow-3: 0 4px 8px 3px rgba(60,64,67,0.15), 0 1px 3px rgba(60,64,67,0.3);
+  --gm-shadow-4: 0 8px 24px rgba(60,64,67,0.2);
+  --gm-shadow-fab: 0 1px 4px rgba(0,0,0,0.3);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  overflow: hidden;
+  background: #f8f9fa;
+  color: #202124;
+}
+
+button, input, select, textarea {
+  font-family: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}

@@ -295,7 +295,6 @@ for (const tc of ALL_CASES) {
     const expansions = runs.map(r => r.expandedVertices)
     const relaxations = runs.map(r => r.relaxedEdges)
     const heaps = runs.map(r => r.heapDeltaBytes)
-    const costs = runs.map(r => r.totalCostMeters)
 
     summaryRows.push({
       testCaseId: tc.id,

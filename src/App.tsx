@@ -63,6 +63,14 @@ import {
   type DownloadProgress,
   type OfflinePackageState,
 } from './services/offline/types'
+import {
+  datasetUpdateService,
+} from './services/offline/datasetUpdateService'
+import type {
+  DatasetUpdateProgress,
+  InstalledDatasetRelease,
+  UpdateCheckResult,
+} from './services/offline/manifestTypes'
 
 offlineManager.registerProtocol(maplibregl)
 
@@ -79,6 +87,7 @@ import {
   NEARBY_CATEGORIES,
   getGeocodingProvider,
   getOfflineDelhiProvider,
+  OfflineDelhiProvider,
   type GeocodingProvider,
   type GeocodingResult,
 } from './services/geocoding'
@@ -271,7 +280,7 @@ function App() {
 
   const appliedStyle = useRef(defaultStyle)
   const providerRef = useRef<GeocodingProvider>(getGeocodingProvider())
-  const offlineDelhiProviderRef = useRef<GeocodingProvider>(getOfflineDelhiProvider())
+  const offlineDelhiProviderRef = useRef<OfflineDelhiProvider>(getOfflineDelhiProvider())
   const routingProviderRef = useRef<RoutingProvider>(getRoutingProvider())
   const offlineDelhiRoutingRef = useRef<OfflineDelhiRoutingProvider>(getOfflineDelhiRoutingProvider())
   const searchAbortRef = useRef<AbortController | null>(null)
@@ -293,6 +302,15 @@ function App() {
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null)
   const [isDownloadingOffline, setIsDownloadingOffline] = useState(false)
   const [offlineError, setOfflineError] = useState('')
+
+  // Map Data Updates State
+  const [installedRelease, setInstalledRelease] = useState<InstalledDatasetRelease | null>(null)
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false)
+  const [updateCheckResult, setUpdateCheckResult] = useState<UpdateCheckResult | null>(null)
+  const [isUpdatingDataset, setIsUpdatingDataset] = useState(false)
+  const [updateProgress, setUpdateProgress] = useState<DatasetUpdateProgress | null>(null)
+  const [updateError, setUpdateError] = useState('')
+  const [updateSuccess, setUpdateSuccess] = useState('')
   const [styleUrl, setStyleUrl] = useState(defaultStyle)
   const [styleName, setStyleName] = useState(defaultStyleName)
   const [query, setQuery] = useState('')
@@ -578,9 +596,13 @@ function App() {
     let isMounted = true
     async function initOffline() {
       try {
-        const state = await offlineManager.getPackageState()
+        const [state, release] = await Promise.all([
+          offlineManager.getPackageState(),
+          datasetUpdateService.getInstalledRelease(),
+        ])
         if (!isMounted) return
         setOfflineState(state)
+        setInstalledRelease(release)
 
         if (state.status === 'ready') {
           const file = await offlineManager.getPackageFile()
@@ -608,8 +630,27 @@ function App() {
       }
     }
     initOffline()
+
+    const unsubscribeUpdate = datasetUpdateService.onUpdateActivated(async newRelease => {
+      if (!isMounted) return
+      setInstalledRelease(newRelease)
+      try {
+        await offlineDelhiProviderRef.current.reloadPlaces?.()
+        await offlineDelhiRoutingRef.current.reloadGraph?.()
+        const state = await offlineManager.getPackageState()
+        setOfflineState(state)
+        const file = await offlineManager.getPackageFile()
+        if (file) {
+          offlineManager.attachPmtilesFile(file)
+        }
+      } catch (refreshErr) {
+        console.warn('Failed refreshing services after update activation:', refreshErr)
+      }
+    })
+
     return () => {
       isMounted = false
+      unsubscribeUpdate()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -1551,6 +1592,84 @@ function App() {
     }
   }
 
+  const handleCheckForUpdates = async () => {
+    if (isCheckingUpdate || isUpdatingDataset) return
+    setIsCheckingUpdate(true)
+    setUpdateError('')
+    setUpdateSuccess('')
+    try {
+      const result = await datasetUpdateService.checkForUpdates()
+      setUpdateCheckResult(result)
+      if (result.error) {
+        setUpdateError(result.error)
+      }
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : 'Failed to check for updates.')
+    } finally {
+      setIsCheckingUpdate(false)
+    }
+  }
+
+  const handleApplyDatasetUpdate = async () => {
+    if (!updateCheckResult?.latestManifest || isUpdatingDataset) return
+    setIsUpdatingDataset(true)
+    setUpdateError('')
+    setUpdateSuccess('')
+    setUpdateProgress({
+      currentAsset: 'places',
+      assetIndex: 1,
+      totalAssets: 3,
+      assetBytesDownloaded: 0,
+      assetTotalBytes: updateCheckResult.latestManifest.assets.places.sizeBytes,
+      totalBytesDownloaded: 0,
+      totalBytesToDownload:
+        updateCheckResult.latestManifest.assets.places.sizeBytes +
+        updateCheckResult.latestManifest.assets.routingGraph.sizeBytes +
+        updateCheckResult.latestManifest.assets.pmtiles.sizeBytes,
+      percentage: 0,
+    })
+
+    try {
+      const updated = await datasetUpdateService.downloadAndInstallUpdate(
+        updateCheckResult.latestManifest,
+        (progress) => setUpdateProgress(progress),
+      )
+      setUpdateSuccess(`Offline map dataset successfully updated to v${updated.manifest.version}!`)
+      setUpdateCheckResult(null)
+      setShareToast(`Delhi offline dataset updated to v${updated.manifest.version}`)
+    } catch (err) {
+      const isAbort = (err instanceof Error && err.name === 'AbortError') || (err instanceof DOMException && err.name === 'AbortError')
+      if (isAbort) {
+        setUpdateError('Update cancelled. Your previous offline dataset is safely preserved.')
+      } else {
+        setUpdateError((err instanceof Error ? err.message : 'Update failed.') + ' Existing offline map data is safely preserved.')
+      }
+    } finally {
+      setIsUpdatingDataset(false)
+      setUpdateProgress(null)
+    }
+  }
+
+  const handleCancelDatasetUpdate = () => {
+    datasetUpdateService.cancelUpdate()
+  }
+
+  const handleRevertToBundled = async () => {
+    const confirmed = window.confirm(
+      'Revert offline map data to original bundled version (v2026.10.20)?'
+    )
+    if (!confirmed) return
+    try {
+      const reverted = await datasetUpdateService.revertToBundledRelease()
+      setInstalledRelease(reverted)
+      setUpdateSuccess('Reverted to bundled offline release.')
+      setUpdateCheckResult(null)
+      setShareToast('Reverted to bundled offline release.')
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : 'Failed to revert dataset.')
+    }
+  }
+
   const handleSwitchMode = async (nextMode: MapMode) => {
     if (nextMode === 'offline-delhi') {
       if (offlineState.status === 'unsupported') {
@@ -1785,20 +1904,14 @@ function App() {
       {/* App Topbar (hidden during active navigation to reduce distraction) */}
       {navStatus === 'idle' && (
         <header className="topbar">
-          <button
-            className="icon-button menu-button"
-            onClick={() => setSidebarOpen(value => !value)}
-            aria-label={sidebarOpen ? 'Collapse sidebar' : 'Open sidebar'}
-          >
-            <Menu size={19} />
-          </button>
-          <a className="brand" href="#" aria-label="OpenAtlas home">
-            <span className="brand-mark"><MapIcon size={18} strokeWidth={2.5} /></span>
-            <span>open<span className="brand-accent">atlas</span></span>
-          </a>
-
           <div className="search-box" ref={searchBoxRef}>
-            <Search size={18} />
+            <button
+              className="icon-button menu-button"
+              onClick={() => setSidebarOpen(value => !value)}
+              aria-label={sidebarOpen ? 'Collapse sidebar' : 'Open sidebar'}
+            >
+              <Menu size={19} />
+            </button>
             <input
               ref={searchInput}
               value={query}
@@ -1807,7 +1920,7 @@ function App() {
                 setQuery(event.target.value)
                 setSearchDropdownOpen(true)
               }}
-              placeholder={mapMode === 'offline-delhi' ? 'Search Delhi places, landmarks or saved (offline)' : 'Search global places, addresses or saved'}
+              placeholder={mapMode === 'offline-delhi' ? 'Search Delhi places, landmarks or saved (offline)' : 'Search Google Maps style places, addresses or saved'}
               aria-label={mapMode === 'offline-delhi' ? 'Search Delhi places, landmarks or saved (offline)' : 'Search global places, addresses or saved'}
             />
             {query ? (
@@ -1816,6 +1929,15 @@ function App() {
               </button>
             ) : null}
             {isSearching ? <span className="search-spinner" title="Searching…" /> : <kbd>⌘ K</kbd>}
+            <span className="omnibox-divider" />
+            <button
+              className="icon-button omnibox-directions-btn"
+              onClick={() => openPanel('directions')}
+              title="Directions & Routes"
+              aria-label="Directions & Routes"
+            >
+              <Navigation size={18} />
+            </button>
 
             {searchDropdownOpen && (
               <div className="search-dropdown" role="listbox" aria-label="Search suggestions">
@@ -1962,8 +2084,32 @@ function App() {
             )}
           </div>
 
+          <a className="brand" href="#" aria-label="OpenAtlas home">
+            <span className="brand-mark"><MapIcon size={18} strokeWidth={2.5} /></span>
+            <span>open<span className="brand-accent">atlas</span></span>
+          </a>
+
           <button className="avatar" aria-label="Your profile">S</button>
         </header>
+      )}
+
+      {/* Quick Category Chips Bar (Google Maps style pill bar) */}
+      {navStatus === 'idle' && !activePanel && (
+        <nav className="quick-chips-bar" role="toolbar" aria-label="Explore nearby categories">
+          {NEARBY_CATEGORIES.map(cat => (
+            <button
+              key={cat.key}
+              className="quick-chip-pill"
+              onClick={() => {
+                setActivePanel('nearby')
+                discoverNearby(cat.key)
+              }}
+            >
+              {renderCategoryIcon(cat.key, 14)}
+              <span>{cat.label}</span>
+            </button>
+          ))}
+        </nav>
       )}
 
       {/* Sidebar (hidden during active navigation) */}
@@ -2080,6 +2226,18 @@ function App() {
       {navStatus === 'idle' && (
         <button className="locate-button" onClick={locateMe} aria-label="Find my location" title="Find my location">
           <Crosshair size={19} />
+        </button>
+      )}
+
+      {navStatus === 'idle' && (
+        <button
+          className="layer-fab"
+          onClick={() => openPanel('styles')}
+          title="Map styles & layers"
+          aria-label="Map styles & layers"
+        >
+          <Layers size={18} />
+          <span>Layers</span>
         </button>
       )}
 
@@ -2662,6 +2820,127 @@ function App() {
                 {offlineState.status === 'unsupported' && (
                   <div className="offline-unsupported-note">
                     Your browser does not support the Origin Private File System (OPFS) API. Please use a modern browser (Chrome 86+, Safari 15.2+, Edge 86+, Firefox 111+) in a secure HTTPS context.
+                  </div>
+                )}
+              </div>
+
+              {/* Map Data Updates Card */}
+              <div className="offline-update-card">
+                <div className="offline-card-header">
+                  <div>
+                    <strong>Map Data Updates</strong>
+                    <div className="offline-package-meta">
+                      OSM & OpenAtlas versioned releases for offline navigation
+                    </div>
+                  </div>
+                  <span className={`offline-version-badge ${installedRelease?.source === 'updated' ? 'updated' : ''}`}>
+                    v{installedRelease?.manifest.version || '2026.10.20'} ({installedRelease?.source === 'updated' ? 'Updated' : 'Bundled'})
+                  </span>
+                </div>
+
+                <div className="offline-version-row">
+                  <span className="offline-card-desc">
+                    Includes road network (33,000+ km), {installedRelease?.manifest.metadata?.placeCount?.toLocaleString() || '13,594'} POIs, and vector basemap.
+                  </span>
+                </div>
+
+                {updateSuccess && (
+                  <div className="offline-update-uptodate-banner" role="status">
+                    <CheckCircle2 size={16} />
+                    <span>{updateSuccess}</span>
+                  </div>
+                )}
+
+                {updateError && (
+                  <div className="offline-error-alert" role="alert">
+                    <AlertCircle size={15} />
+                    <span>{updateError}</span>
+                  </div>
+                )}
+
+                {/* Staged Download Progress */}
+                {isUpdatingDataset && updateProgress && (
+                  <div className="offline-progress-box">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span className="offline-update-asset-label">
+                        {updateProgress.currentAsset === 'activating' ? 'Verifying & Activating...' : `Downloading ${updateProgress.currentAsset} (${updateProgress.assetIndex} of ${updateProgress.totalAssets})`}
+                      </span>
+                      <span style={{ fontSize: 11, color: '#5f6368', fontWeight: 600 }}>
+                        {updateProgress.percentage.toFixed(0)}%
+                      </span>
+                    </div>
+                    <div className="progress-bar-track">
+                      <div
+                        className="progress-bar-fill"
+                        style={{ width: `${Math.max(2, updateProgress.percentage)}%` }}
+                      />
+                    </div>
+                    <div className="progress-labels">
+                      <span>{(updateProgress.totalBytesDownloaded / (1024 * 1024)).toFixed(1)} / {(updateProgress.totalBytesToDownload / (1024 * 1024)).toFixed(1)} MB</span>
+                      <span>Safe staging</span>
+                    </div>
+                    <button className="offline-cancel-btn" onClick={handleCancelDatasetUpdate}>
+                      Cancel Update
+                    </button>
+                  </div>
+                )}
+
+                {/* Update Available Banner */}
+                {!isUpdatingDataset && updateCheckResult?.hasUpdate && updateCheckResult.latestManifest && (
+                  <div className="offline-update-available-banner">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <strong style={{ fontSize: 13, color: '#202124' }}>
+                        Update Available: v{updateCheckResult.latestVersion}
+                      </strong>
+                      <span className="offline-version-badge updated">New Release</span>
+                    </div>
+                    <p className="offline-update-notes">
+                      {updateCheckResult.latestManifest.description}
+                    </p>
+                    <div style={{ fontSize: 11, color: '#5f6368' }}>
+                      Total download: ~{((updateCheckResult.latestManifest.assets.places.sizeBytes + updateCheckResult.latestManifest.assets.routingGraph.sizeBytes + updateCheckResult.latestManifest.assets.pmtiles.sizeBytes) / (1024 * 1024)).toFixed(1)} MB
+                    </div>
+                    <button
+                      className="offline-action-btn primary"
+                      style={{ marginTop: 6 }}
+                      onClick={handleApplyDatasetUpdate}
+                    >
+                      <Download size={14} />
+                      <span>Download & Install Update</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Up to date Banner */}
+                {!isUpdatingDataset && updateCheckResult && !updateCheckResult.hasUpdate && !updateError && (
+                  <div className="offline-update-uptodate-banner">
+                    <CheckCircle2 size={16} />
+                    <span>Your offline map dataset is up to date (v{installedRelease?.manifest.version || '2026.10.20'}).</span>
+                  </div>
+                )}
+
+                {/* Actions Row */}
+                {!isUpdatingDataset && (
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+                    <button
+                      className="offline-action-btn"
+                      style={{ flex: 1 }}
+                      onClick={handleCheckForUpdates}
+                      disabled={isCheckingUpdate}
+                    >
+                      <RotateCcw size={14} />
+                      <span>{isCheckingUpdate ? 'Checking Server...' : 'Check for Updates'}</span>
+                    </button>
+
+                    {installedRelease?.source === 'updated' && (
+                      <button
+                        className="offline-subtle-btn"
+                        onClick={handleRevertToBundled}
+                        title="Revert to original bundled map data"
+                      >
+                        Revert to Bundled
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -3287,17 +3566,17 @@ function App() {
           )}
 
           <div className="place-actions-row">
+            <button className="directions-action-btn primary" onClick={() => handleDirectionsToPlace(selected)} title="Plan route to this place">
+              <Navigation size={14} />
+              <span>Directions</span>
+            </button>
             <button className={`save-button ${isSelectedSaved ? 'saved-active' : ''}`} onClick={saveSelected}>
               {isSelectedSaved ? <Check size={14} /> : <Bookmark size={14} />}
-              {isSelectedSaved ? 'Saved in Atlas' : 'Save location'}
+              <span>{isSelectedSaved ? 'Saved' : 'Save'}</span>
             </button>
             <button className="directions-action-btn" onClick={() => handleSharePlace(selected)} title="Copy shareable link for this location">
               <Share2 size={13} />
               <span>Share</span>
-            </button>
-            <button className="directions-action-btn" onClick={() => handleDirectionsToPlace(selected)} title="Plan route to this place">
-              <Navigation size={13} />
-              <span>Directions</span>
             </button>
             <button className="directions-action-btn" onClick={() => handleDirectionsFromPlace(selected)} title="Plan route starting from here">
               <MapPin size={13} />

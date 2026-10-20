@@ -1,4 +1,6 @@
 import { calculateDistanceMeters, isValidCoordinate } from '../../coordinates'
+import { getActiveReleasePointer, getOpfsJson, isOpfsSupported } from '../offline/opfsStorage'
+import { ACTIVE_PLACES_FILENAME } from '../offline/datasetUpdateService'
 import type { GeocodingProvider, GeocodingResult, SearchOptions } from './types'
 
 // Compact place tuple: [name, longitude, latitude, category, type]
@@ -28,6 +30,25 @@ export class OfflineDelhiProvider implements GeocodingProvider {
     if (this.loadPromise) return this.loadPromise
 
     this.loadPromise = (async () => {
+      // 0. Try active OPFS release first
+      if (isOpfsSupported()) {
+        try {
+          const activePointer = await getActiveReleasePointer()
+          if (activePointer && activePointer.verified) {
+            const opfsTuples = await getOpfsJson<CompactPlaceTuple[]>(ACTIVE_PLACES_FILENAME)
+            if (Array.isArray(opfsTuples) && opfsTuples.length > 0) {
+              const parsed = this.parseTuples(opfsTuples)
+              if (parsed.length > 0) {
+                this.places = parsed
+                return parsed
+              }
+            }
+          }
+        } catch {
+          // Fall back to fetch
+        }
+      }
+
       try {
         const response = await fetch(this.customDataUrl, { signal })
         if (!response.ok) {
@@ -39,28 +60,7 @@ export class OfflineDelhiProvider implements GeocodingProvider {
           return []
         }
 
-        const parsed: GeocodingResult[] = []
-        for (let i = 0; i < data.length; i++) {
-          const item = data[i] as CompactPlaceTuple
-          if (!Array.isArray(item) || item.length < 3) continue
-          const [name, lon, lat, category, type] = item
-          if (!name || typeof lon !== 'number' || typeof lat !== 'number') continue
-          if (!isValidCoordinate(lon, lat)) continue
-
-          parsed.push({
-            id: `delhi-poi-${i}`,
-            name,
-            displayName: `${name}, Delhi, India`,
-            longitude: lon,
-            latitude: lat,
-            category: category || 'place',
-            type: type || 'landmark',
-            address: {
-              city: 'Delhi',
-              country: 'India',
-            },
-          })
-        }
+        const parsed = this.parseTuples(data as CompactPlaceTuple[])
         this.places = parsed
         return parsed
       } catch (err) {
@@ -74,6 +74,52 @@ export class OfflineDelhiProvider implements GeocodingProvider {
     })()
 
     return this.loadPromise
+  }
+
+  /**
+   * Parses compact place tuples into GeocodingResult objects.
+   */
+  parseTuples(data: CompactPlaceTuple[]): GeocodingResult[] {
+    const parsed: GeocodingResult[] = []
+    for (let i = 0; i < data.length; i++) {
+      const item = data[i]
+      if (!Array.isArray(item) || item.length < 3) continue
+      const [name, lon, lat, category, type] = item
+      if (!name || typeof lon !== 'number' || typeof lat !== 'number') continue
+      if (!isValidCoordinate(lon, lat)) continue
+
+      parsed.push({
+        id: `delhi-poi-${i}`,
+        name,
+        displayName: `${name}, Delhi, India`,
+        longitude: lon,
+        latitude: lat,
+        category: category || 'place',
+        type: type || 'landmark',
+        address: {
+          city: 'Delhi',
+          country: 'India',
+        },
+      })
+    }
+    return parsed
+  }
+
+  /**
+   * Sets pre-loaded places directly in memory.
+   */
+  setPlaces(places: GeocodingResult[]): void {
+    this.places = places
+    this.loadPromise = null
+  }
+
+  /**
+   * Forces a reload of places from OPFS or fetch.
+   */
+  async reloadPlaces(signal?: AbortSignal): Promise<GeocodingResult[]> {
+    this.places = null
+    this.loadPromise = null
+    return this.loadPlaces(signal)
   }
 
   /**

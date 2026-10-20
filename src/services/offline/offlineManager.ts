@@ -1,12 +1,15 @@
 import { FileSource, PMTiles, Protocol } from 'pmtiles'
 import {
+  clearActiveReleasePointer,
   deleteOfflinePackage,
+  getActiveReleasePointer,
   getOfflineFile,
   getStorageQuota,
   hasOfflinePackage,
   isOpfsSupported,
   writeStreamToOpfs,
 } from './opfsStorage'
+import { ACTIVE_PMTILES_FILENAME } from './datasetUpdateService'
 import {
   DELHI_PACKAGE_METADATA,
   type DownloadProgress,
@@ -33,6 +36,23 @@ export class OfflineManager {
     }
 
     try {
+      // Check active release pointer first
+      const activePointer = await getActiveReleasePointer()
+      if (activePointer && activePointer.verified) {
+        const activeFile = await getOfflineFile(ACTIVE_PMTILES_FILENAME, activePointer.manifest.assets.pmtiles.sizeBytes)
+        if (activeFile) {
+          return {
+            status: 'ready',
+            verifiedSize: activeFile.size,
+            lastChecked: Date.now(),
+            metadata: {
+              ...metadata,
+              expectedSize: activeFile.size,
+            },
+          }
+        }
+      }
+
       const isReady = await hasOfflinePackage(this.getFilename(metadata), metadata.expectedSize)
       if (isReady) {
         return {
@@ -192,6 +212,8 @@ export class OfflineManager {
     this.detachPmtilesFile(metadata)
     const filename = this.getFilename(metadata)
     await deleteOfflinePackage(filename)
+    await deleteOfflinePackage(ACTIVE_PMTILES_FILENAME)
+    await clearActiveReleasePointer()
     return {
       status: 'not_downloaded',
       lastChecked: Date.now(),
@@ -259,8 +281,30 @@ export class OfflineManager {
    * Gets the File object for an installed offline package.
    */
   async getPackageFile(metadata: OfflinePackageMetadata = DELHI_PACKAGE_METADATA): Promise<File | null> {
+    const activePointer = await getActiveReleasePointer()
+    if (activePointer && activePointer.verified) {
+      const activeFile = await getOfflineFile(ACTIVE_PMTILES_FILENAME, activePointer.manifest.assets.pmtiles.sizeBytes)
+      if (activeFile) return activeFile
+    }
     const filename = this.getFilename(metadata)
     return getOfflineFile(filename, metadata.expectedSize)
+  }
+
+  /**
+   * Attaches the active release PMTiles file to the protocol if available.
+   */
+  async attachActiveReleaseIfPresent(metadata: OfflinePackageMetadata = DELHI_PACKAGE_METADATA): Promise<boolean> {
+    if (!isOpfsSupported()) return false
+    try {
+      const file = await this.getPackageFile(metadata)
+      if (file) {
+        this.attachPmtilesFile(file, metadata)
+        return true
+      }
+    } catch {
+      // Non-blocking
+    }
+    return false
   }
 
   /**

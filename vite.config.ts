@@ -1,9 +1,13 @@
+/// <reference types="vitest" />
 import react from '@vitejs/plugin-react'
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
+  test: {
+    include: ['src/**/*.test.ts'],
+  },
   plugins: [react(), VitePWA({
     registerType: 'autoUpdate',
     includeAssets: ['favicon.svg', 'openatlas-icon.svg'],
@@ -20,7 +24,14 @@ export default defineConfig({
         'offline/assets/**/*.{json,png,pbf}',
         'offline/delhi/places.json',
       ],
-      globIgnores: ['**/*.pmtiles', 'offline/delhi/*.pmtiles'],
+      // Exclude large binary routing graphs, PMTiles archives, and dynamic update manifests
+      globIgnores: [
+        '**/*.pmtiles',
+        'offline/delhi/*.pmtiles',
+        '**/*.bin',
+        'offline/delhi/*.bin',
+        'offline/delhi/manifest.json',
+      ],
     },
   })],
 })

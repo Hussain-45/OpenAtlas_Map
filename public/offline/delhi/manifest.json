@@ -1,0 +1,51 @@
+{
+  "id": "delhi-nct",
+  "name": "Delhi NCT Core & Regional Network",
+  "version": "2026.10.20",
+  "releaseDate": "2026-10-20T12:27:22.566Z",
+  "description": "Delhi NCT offline map package, road routing graph, and POI index.",
+  "bounds": [
+    76.978,
+    28.44,
+    77.497,
+    28.738
+  ],
+  "center": [
+    77.2375,
+    28.589
+  ],
+  "attribution": "© OpenStreetMap contributors, BBBike.org, VersaTiles Colorful",
+  "assets": {
+    "pmtiles": {
+      "type": "pmtiles",
+      "path": "/offline/delhi/NewDelhi.osm.pmtiles",
+      "filename": "NewDelhi.osm.pmtiles",
+      "sizeBytes": 15361932,
+      "sha256": "51e3cbf69fd4fcbad19d41dbfd432466d159522db7b618d8099374ac931a626d",
+      "specVersion": 3
+    },
+    "routingGraph": {
+      "type": "routing-graph",
+      "path": "/offline/delhi/delhi-routing-graph.bin",
+      "filename": "delhi-routing-graph.bin",
+      "sizeBytes": 22859718,
+      "sha256": "3051698dd59274877bd3b38a927c048252163e9717fbb3867207a323c9732236",
+      "specVersion": 1
+    },
+    "places": {
+      "type": "places-index",
+      "path": "/offline/delhi/places.json",
+      "filename": "places.json",
+      "sizeBytes": 852524,
+      "sha256": "74a6e77224e619d8fd0d57767e56e6fe6c29dfd37c278f1d5f143ca7bf944f9b"
+    }
+  },
+  "metadata": {
+    "nodeCount": 944338,
+    "edgeCount": 1080347,
+    "nameCount": 3621,
+    "placeCount": 13594,
+    "totalRoadKm": 33001.1,
+    "sourceDataDate": "2026-10-20"
+  }
+}

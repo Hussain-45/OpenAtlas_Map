@@ -8,8 +8,7 @@ console.log('=== OpenAtlas Offline Network Isolation Verification ===\n')
 let networkRequestsIntercepted = 0
 
 // Monkey-patch global fetch to detect ANY network attempts
-const originalFetch = globalThis.fetch
-globalThis.fetch = async (url, options) => {
+globalThis.fetch = async (url) => {
   networkRequestsIntercepted++
   throw new Error(`[Network Isolation Violation] Blocked unexpected outbound request to: ${url}`)
 }

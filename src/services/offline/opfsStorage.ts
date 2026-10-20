@@ -1,8 +1,11 @@
 import { bytesToHeader, type Header } from 'pmtiles'
 import type { DownloadProgress, StorageQuotaInfo } from './types'
+import type { InstalledDatasetRelease } from './manifestTypes'
 
 export const DEFAULT_PMTILES_FILENAME = 'NewDelhi.osm.pmtiles'
 export const DEFAULT_EXPECTED_SIZE = 15361932
+export const ACTIVE_RELEASE_FILENAME = 'active-release.json'
+export const STAGING_PREFIX = 'staging_'
 
 /**
  * Checks whether the current runtime environment supports the Origin Private File System (OPFS).
@@ -103,7 +106,7 @@ export async function getOfflineFile(
     const fileHandle = await root.getFileHandle(filename)
     const file = await fileHandle.getFile()
 
-    if (file.size !== expectedSize) {
+    if (expectedSize > 0 && file.size !== expectedSize) {
       return null
     }
 
@@ -117,6 +120,86 @@ export async function getOfflineFile(
   } catch {
     return null
   }
+}
+
+/**
+ * Retrieves generic File from OPFS by filename.
+ */
+export async function getOpfsFile(filename: string): Promise<File | null> {
+  if (!isOpfsSupported()) return null
+  try {
+    const root = await navigator.storage.getDirectory()
+    const handle = await root.getFileHandle(filename)
+    return await handle.getFile()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Reads an entire OPFS file into an ArrayBuffer.
+ */
+export async function getOpfsArrayBuffer(filename: string): Promise<ArrayBuffer | null> {
+  const file = await getOpfsFile(filename)
+  if (!file) return null
+  return await file.arrayBuffer()
+}
+
+/**
+ * Reads and parses JSON from an OPFS file.
+ */
+export async function getOpfsJson<T>(filename: string): Promise<T | null> {
+  const file = await getOpfsFile(filename)
+  if (!file) return null
+  try {
+    const text = await file.text()
+    return JSON.parse(text) as T
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Writes text or JSON directly to an OPFS file.
+ */
+export async function writeOpfsText(filename: string, text: string): Promise<void> {
+  if (!isOpfsSupported()) throw new Error('OPFS is not supported.')
+  const root = await navigator.storage.getDirectory()
+  const handle = await root.getFileHandle(filename, { create: true })
+  const writable = await handle.createWritable()
+  try {
+    const encoded = new TextEncoder().encode(text)
+    await writable.write(encoded)
+    await writable.close()
+  } catch (err) {
+    try {
+      await writable.abort()
+    } catch {
+      // Ignore abort failure
+    }
+    throw err
+  }
+}
+
+/**
+ * Retrieves the currently active dataset release manifest pointer from OPFS.
+ */
+export async function getActiveReleasePointer(): Promise<InstalledDatasetRelease | null> {
+  return await getOpfsJson<InstalledDatasetRelease>(ACTIVE_RELEASE_FILENAME)
+}
+
+/**
+ * Atomically updates the active release manifest pointer in OPFS.
+ */
+export async function setActiveReleasePointer(release: InstalledDatasetRelease): Promise<void> {
+  await writeOpfsText(ACTIVE_RELEASE_FILENAME, JSON.stringify(release, null, 2))
+}
+
+/**
+ * Clears the active release manifest pointer from OPFS.
+ */
+export async function clearActiveReleasePointer(): Promise<void> {
+  await deleteOpfsFile(ACTIVE_RELEASE_FILENAME)
 }
 
 /**
@@ -146,6 +229,81 @@ export async function deleteOfflinePackage(filename = DEFAULT_PMTILES_FILENAME):
     return deletedAny
   } catch {
     return false
+  }
+}
+
+/**
+ * Deletes any file by name from OPFS root.
+ */
+export async function deleteOpfsFile(filename: string): Promise<boolean> {
+  if (!isOpfsSupported()) return false
+  try {
+    const root = await navigator.storage.getDirectory()
+    await root.removeEntry(filename)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Cleans up any staging files or leftover temporary files in OPFS.
+ */
+export async function cleanupStagingFiles(prefix = STAGING_PREFIX): Promise<void> {
+  if (!isOpfsSupported()) return
+  try {
+    const root = await navigator.storage.getDirectory()
+    // Scan entries if supported
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rootAny = root as any
+    if (typeof rootAny.values === 'function') {
+      for await (const entry of rootAny.values()) {
+        if (entry.kind === 'file') {
+          const name: string = entry.name
+          if (name.startsWith(prefix) || name.endsWith('.tmp')) {
+            try {
+              await root.removeEntry(name)
+            } catch {
+              // Ignore deletion error
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // Non-blocking cleanup
+  }
+}
+
+/**
+ * Copies a file from source handle to destination handle within OPFS.
+ */
+export async function copyOpfsFile(sourceFilename: string, destFilename: string): Promise<void> {
+  if (!isOpfsSupported()) throw new Error('OPFS is not supported.')
+  const root = await navigator.storage.getDirectory()
+  const sourceHandle = await root.getFileHandle(sourceFilename)
+  const sourceFile = await sourceHandle.getFile()
+
+  const destHandle = await root.getFileHandle(destFilename, { create: true })
+  const writable = await destHandle.createWritable()
+  try {
+    const stream = sourceFile.stream()
+    const reader = stream.getReader()
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) {
+        await writable.write(value)
+      }
+    }
+    await writable.close()
+  } catch (err) {
+    try {
+      await writable.abort()
+    } catch {
+      // Ignore
+    }
+    throw err
   }
 }
 
@@ -209,11 +367,13 @@ export async function writeStreamToOpfs(
       throw new Error(`Downloaded file size mismatch: got ${file.size} bytes, expected ${totalBytes} bytes.`)
     }
 
-    // Verify PMTiles header
-    const headerBuffer = await file.slice(0, 127).arrayBuffer()
-    const validation = validatePmtilesHeader(headerBuffer)
-    if (!validation.valid) {
-      throw new Error(`PMTiles header validation failed: ${validation.error}`)
+    // Verify PMTiles header if filename indicates PMTiles
+    if (filename.endsWith('.pmtiles')) {
+      const headerBuffer = await file.slice(0, 127).arrayBuffer()
+      const validation = validatePmtilesHeader(headerBuffer)
+      if (!validation.valid) {
+        throw new Error(`PMTiles header validation failed: ${validation.error}`)
+      }
     }
 
     // Commit file: write to target filename and remove .tmp

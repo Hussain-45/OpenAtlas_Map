@@ -1,4 +1,7 @@
 import { isValidCoordinate } from '../../coordinates'
+import { getActiveReleasePointer, getOpfsArrayBuffer, isOpfsSupported } from '../offline/opfsStorage'
+import { ACTIVE_ROUTING_FILENAME } from '../offline/datasetUpdateService'
+import { validateRoutingGraphBuffer } from '../offline/manifestValidator'
 import type { Route, RouteEndpoint, RouteRequest, RouteStep, RoutingProvider, TravelMode } from './types'
 
 export const DELHI_ROUTING_BOUNDS: [number, number, number, number] = [
@@ -503,6 +506,24 @@ export class OfflineDelhiRoutingProvider implements RoutingProvider {
       let arrayBuffer: ArrayBuffer | null = null
       const graphUrl = '/offline/delhi/delhi-routing-graph.bin'
 
+      // 0. Try active OPFS release first
+      if (isOpfsSupported()) {
+        try {
+          const activePointer = await getActiveReleasePointer()
+          if (activePointer && activePointer.verified) {
+            const buf = await getOpfsArrayBuffer(ACTIVE_ROUTING_FILENAME)
+            if (buf && buf.byteLength >= 64) {
+              const check = validateRoutingGraphBuffer(buf)
+              if (check.valid) {
+                arrayBuffer = buf
+              }
+            }
+          }
+        } catch {
+          // Fall back to CacheStorage / HTTP
+        }
+      }
+
       // 1. Try Browser CacheStorage first
       if (typeof caches !== 'undefined') {
         try {
@@ -577,6 +598,20 @@ export class OfflineDelhiRoutingProvider implements RoutingProvider {
       this.loadPromise = null
       throw err
     }
+  }
+
+  /**
+   * Reloads the road network graph from an updated OPFS active release or an explicit ArrayBuffer.
+   */
+  async reloadGraph(customBuffer?: ArrayBuffer): Promise<OfflineDelhiRoadGraph> {
+    this.graphInstance = null
+    this.loadPromise = null
+    if (customBuffer) {
+      const graph = new OfflineDelhiRoadGraph(customBuffer)
+      this.graphInstance = graph
+      return graph
+    }
+    return this.ensureGraphLoaded()
   }
 
   /**
